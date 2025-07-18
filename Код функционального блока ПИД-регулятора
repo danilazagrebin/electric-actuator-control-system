@@ -1,0 +1,56 @@
+FUNCTION_BLOCK PID_antiwindup
+VAR_INPUT
+	lvl_real	: REAL; 	 // Текущий уровень, м
+	set 		: REAL;          // Требуемый уровень, м
+	P 			: REAL;  
+	I 			: REAL;
+	D 			: REAL;
+	OutMin         : REAL;
+	OutMax         : REAL;
+	Ts 			: REAL;       	 // Период дискретизации, c
+	N 			: REAL;			 // Верхняя граничная частота фильтра, рад/с
+END_VAR
+
+VAR_OUTPUT
+	PID_out 	: REAL;
+END_VAR
+
+VAR
+PID_1 			: REAL;
+PID_2 			: REAL;
+saturation_1 	: REAL;
+saturation_2 	: REAL;
+END_VAR
+
+u_2 := u_1;
+u_1 := u;
+u := (set - lvl_real); 			// Вычисление ошибки 
+
+PID_1 := set - lvl_real;        // Измерение значения на входе ПИД-регулятора
+PID_out := (2 - N*Ts) * y_1 + (N*Ts - 1)*y_2 + (P + D*N)*u +
+		   (-P + P*N*Ts - P + PID_I*Ts - 2*D*N)*u_1 + 
+		   (P - P*N*Ts - PID_I*Ts + PID_I*N*Ts*Ts + D*N)*u_2;
+PID_2 := PID_out; 				// Измерение значения на выходе ПИД-регулятора
+
+// Сохранение значений выходов и входов ПИД-регулятора предыдущих двух тактов
+y_2 := y_1;
+y_1 := y; 
+y := PID_out;
+
+saturation_1 := PID_out;
+
+// Ограничитель выхода ПИД-регулятора
+IF PID_out > OutMax THEN
+	PID_out := OutMax;
+ELSIF PID_out < OutMin THEN
+	PID_out := OutMin;
+END_IF
+
+saturation_2 := PID_out;
+
+// Защита от насыщения интегральной составляющей ПИД-регулятора
+IF ((PID_1 > 0 AND PID_2 > 0) OR (PID_1 < 0 AND PID_2 < 0)) AND (saturation_1 <> saturation_2) THEN
+	PID_I := 0;
+ELSE 
+	PID_I := I;
+END_IF
