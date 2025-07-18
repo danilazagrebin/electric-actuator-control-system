@@ -1,0 +1,254 @@
+FUNCTION_BLOCK VLV_FB
+VAR_INPUT
+		// входы
+	{attribute 'symbol' := 'readwrite'}
+	pos 				: REAL; 		// положение 0-100%
+		{attribute 'symbol' := 'readwrite'}
+	temp_pos 				: REAL; 		// положение 0-100%
+	{attribute 'symbol' := 'readwrite'}
+	delta_pos 				: REAL := 3; 		// положение 0-100%
+	{attribute 'symbol' := 'readwrite'}
+	cmd_open 			: BOOL;       	// Команда с физической панели «Открыть»
+	{attribute 'symbol' := 'readwrite'}
+	cmd_close 			: BOOL;      	// Команда с физической панели «Закрыть»
+	{attribute 'symbol' := 'readwrite'}
+	open_ctl_arm 			: BOOL;      	// Сигнал управления «Открыть» с АРМ оператора
+	{attribute 'symbol' := 'readwrite'}
+	close_ctl_arm			: BOOL;     	// Сигнал управления «Закрыть» с АРМ оператора
+	{attribute 'symbol' := 'readwrite'}
+	lso 				: BOOL;         // Концевой сигнал «Открыто»
+	{attribute 'symbol' := 'readwrite'}
+	lsc 				: BOOL;         // Концевой сигнал «Закрыто»
+	{attribute 'symbol' := 'readwrite'}
+	local_control 		: BOOL;  		// Местное управление с помощью штурвала 
+	{attribute 'symbol' := 'readwrite'}
+	operator_control 	: BOOL;  		// Управление с АРМ оператора 
+	// настройки
+	{attribute 'symbol' := 'readwrite'}
+	CONFIG : STRUCT_CONFIG;
+END_VAR
+VAR_OUTPUT
+		// выходы
+	{attribute 'symbol' := 'readwrite'}
+	open_ctl 			: BOOL;      	
+	{attribute 'symbol' := 'readwrite'}
+	close_ctl 			: BOOL;     	
+	{attribute 'symbol' := 'readwrite'}
+	DIAGN 				: ENUM_DIAGN;	
+	{attribute 'symbol' := 'readwrite'}
+	state 				: enum_state;
+	{attribute 'symbol' := 'readwrite'}
+	new_state 			: enum_state; 
+	{attribute 'symbol' := 'readwrite'}
+	HLG_open 			: BOOL;
+	{attribute 'symbol' := 'readwrite'}
+	HLR_closed 			: BOOL;
+END_VAR
+VAR
+		// счетчики
+	ctu_open 			: CTU;
+	ctu_close 			: CTU;
+	
+		// таймеры
+	TON_RUNTIME 		: TON;
+	TON_STARTTIME 		: TON;
+	ton_starttime_in 	: BOOL;
+	{attribute 'symbol' := 'readwrite'}
+	switch_control      : BOOL;
+	cw : INT;
+END_VAR
+HLG_open := lso;
+HLR_closed := lsc;
+IF (local_control = FALSE AND operator_control = FALSE) THEN
+	switch_control := TRUE;
+ELSIF (local_control = TRUE OR operator_control = TRUE) THEN
+	switch_control := FALSE;
+END_IF
+// модель
+IF	(MAIN.state_task = unknown OR local_control) AND DIAGN = OK THEN              // определение начального
+	IF lso = TRUE THEN                               // положения
+		new_state := opened;
+	ELSIF lsc = TRUE THEN
+		new_state := closed;
+	ELSE
+		new_state := between;
+	END_IF
+	temp_pos := pos;
+END_IF
+
+IF local_control = FALSE THEN                                  // удаленное управление
+	IF MAIN.state_task = opened AND close_ctl = TRUE THEN          // определение нового положения
+		new_state := closing; 
+	END_IF
+	
+	IF MAIN.state_task = opened AND lso = FALSE THEN
+		new_state := unknown;
+	END_IF
+	
+	IF MAIN.state_task = closed AND open_ctl = TRUE THEN
+		new_state := opening; 
+	END_IF
+	
+	IF MAIN.state_task = closed AND lsc = FALSE THEN
+		new_state := unknown;
+	END_IF
+	
+	IF MAIN.state_task = between AND open_ctl = TRUE THEN
+		new_state := opening; 
+	END_IF
+	
+	IF MAIN.state_task = between AND close_ctl = TRUE THEN
+		new_state := closing; 
+	END_IF
+	
+	IF MAIN.state_task = opening AND lso = TRUE THEN
+		new_state := opened; 
+	END_IF
+	
+	IF MAIN.state_task = opening AND open_ctl = FALSE THEN
+		new_state := between; 
+	END_IF
+	
+	IF MAIN.state_task = closing AND lsc = TRUE THEN
+		new_state := closed; 
+	END_IF
+	
+	IF MAIN.state_task = closing AND close_ctl = FALSE THEN
+		new_state := between; 
+	END_IF
+END_IF
+
+IF (MAIN.state_task = closed AND new_state = opening) OR (MAIN.state_task = opened AND new_state = closing) THEN
+		ton_starttime_in := TRUE;
+ELSIF (lso = FALSE AND lsc = FALSE) THEN
+		ton_starttime_in := FALSE;
+ELSIF (open_ctl = FALSE AND close_ctl = FALSE) THEN
+		ton_starttime_in := FALSE;				
+END_IF
+
+TON_RUNTIME(IN:= new_state = opening OR new_state = closing, PT:= REAL_TO_TIME(CONFIG.RUNTIME)*1000);
+TON_STARTTIME(IN:= ton_starttime_in, PT:= REAL_TO_TIME(CONFIG.STARTTIME)*1000);
+
+state := new_state;
+
+ctu_open(CU := (cmd_open OR open_ctl_arm) AND (ctu_open.CV < 1), PV := 2, RESET := close_ctl = TRUE);
+ctu_close(CU := (cmd_close OR close_ctl_arm) AND (ctu_close.CV < 1), PV := 2, RESET := open_ctl = TRUE);
+
+                                           													    // Выдача сигналов диагностики
+IF TON_RUNTIME.Q = TRUE THEN
+	DIAGN := shortfall;                       // недоход (вышло время полного хода)
+END_IF
+IF TON_STARTTIME.Q = TRUE THEN
+	DIAGN := no_moving;                       // нет трогания
+END_IF
+IF MAIN.state_task = opened AND lso = FALSE THEN        // несанкционированное закрытие или сход с концевика
+	DIAGN :=  unauthorized_closing;
+END_IF
+IF MAIN.state_task = closed AND lsc = FALSE THEN        // несанкционированное открытие или сход с концевика
+	DIAGN :=  unauthorized_opening; 
+END_IF
+
+IF state = between THEN
+	IF cw = 0 THEN
+		temp_pos := pos;
+		cw := 1;
+	END_IF
+	IF temp_pos > (pos + delta_pos) THEN 
+		DIAGN :=  unauthorized_closing;
+		state := unknown;
+	END_IF
+	IF temp_pos < (pos - delta_pos) THEN 
+		DIAGN :=  unauthorized_opening;
+		state := unknown;
+	END_IF
+ELSE
+	cw := 0;
+END_IF
+
+IF local_control = FALSE AND DIAGN = OK AND operator_control = FALSE THEN             	  // Выдача сигнала управления
+	IF CONFIG.TYPE_CTL = 0 THEN	             // потенциальный тип управления
+		IF lso = 0 THEN            
+			open_ctl := cmd_open;
+		ELSE
+			open_ctl := 0;
+		END_IF
+	
+		IF lsc = 0 THEN
+			close_ctl := cmd_close;
+		ELSE
+			close_ctl := 0;
+		END_IF
+	
+	ELSIF CONFIG.TYPE_CTL = 1 THEN           // импульсный тип управления
+		IF lso = 0 AND cmd_open = TRUE AND (ctu_close.CV = 0 OR ctu_open.CV = 1) THEN            
+			open_ctl := TRUE;
+		END_IF
+		IF (lso = 1 OR cmd_close = TRUE) THEN
+			open_ctl := FALSE;
+		END_IF
+	
+		IF lsc = 0 AND cmd_close = TRUE AND (ctu_open.CV = 0 OR ctu_close.CV = 1) THEN
+			close_ctl := TRUE;
+		END_IF
+		IF (lsc = 1 OR cmd_open = TRUE) THEN
+			close_ctl := FALSE;
+		END_IF
+	END_IF
+ELSIF operator_control = TRUE AND DIAGN = OK AND local_control = FALSE THEN
+	IF lso = 0 AND open_ctl_arm = TRUE AND (ctu_close.CV = 0 OR ctu_open.CV = 1) THEN            
+		open_ctl := TRUE;
+		close_ctl_arm := FALSE;
+	END_IF	
+	IF lso = 0 AND open_ctl_arm = FALSE THEN            
+		open_ctl := FALSE;
+	END_IF
+	
+	IF (lso = 1 OR close_ctl_arm = TRUE) THEN
+		open_ctl := FALSE;
+	END_IF
+	
+	IF lsc = 0 AND close_ctl_arm = TRUE AND (ctu_open.CV = 0 OR ctu_close.CV = 1) THEN
+		close_ctl := TRUE;
+		open_ctl := FALSE;
+	END_IF	
+	IF lsc = 0 AND close_ctl_arm = FALSE AND (ctu_open.CV = 0 OR ctu_close.CV = 1) THEN
+		close_ctl := FALSE;
+	END_IF	
+	
+	IF (lsc = 1 OR open_ctl_arm = TRUE) THEN
+		close_ctl := FALSE;
+	END_IF
+END_IF
+
+                                                        // Дополнительная выдача сигналов диагностики
+IF open_ctl = TRUE AND close_ctl = TRUE THEN
+	DIAGN := failure;                       // авария подача одновременно открыть и закрыть
+END_IF
+
+IF DIAGN <> OK THEN                                       // Выполнение действий при аварийной ситуации 
+		IF CONFIG.FAILACTION = RST THEN
+			open_ctl := FALSE;
+			close_ctl := FALSE;
+			DIAGN := OK;
+		END_IF
+		IF CONFIG.FAILACTION = STP THEN
+			open_ctl := FALSE;
+			close_ctl := FALSE;
+		END_IF
+		IF CONFIG.FAILACTION = CLS THEN
+			IF lsc = FALSE THEN
+				open_ctl := FALSE;
+				close_ctl := TRUE;
+			ELSE
+				close_ctl := FALSE;
+			END_IF;
+		END_IF
+		IF CONFIG.FAILACTION = OPN THEN
+			IF lso = FALSE THEN
+				open_ctl := TRUE;
+				close_ctl := FALSE;
+			ELSE
+				open_ctl := FALSE;
+			END_IF;
+		END_IF
+END_IF
